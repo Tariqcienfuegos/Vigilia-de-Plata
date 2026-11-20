@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<style>html,body{margin:0;background:#050507;overflow:hidden;height:100%;touch-action:none}canvas{display:block;touch-action:none}</style>
+</head><body>
+<pre id="err" style="position:fixed;top:0;left:0;color:red;font:12px monospace;z-index:9;margin:0"></pre>
+<script>onerror=function(m,s,l){document.getElementById("err").textContent+=m+" linea "+l+" ";}</script>
+<canvas id="c"></canvas>
+<script>
+const cv=document.getElementById("c"), g=cv.getContext("2d");
+const CW=3, CH=5, FPS=24;
+const MUNDO=3;                 // ancho del prado: 3 pantallas
+const ZMIN=1, ZMAX=4;          // límites del zoom
+const rnd=n=>Math.floor(Math.random()*n);
+const R=(a,b)=>a+Math.random()*(b-a);
+let W,H,D,COLS,ROWS,SCOLS,horizon,stars,blades,suelo;
+let camX=0, camY=0, zoom=1, VX0=0, VX1=1e9, dirty=true;
+
+function reset(){ zoom=1; camX=(COLS*CW-W)/2; camY=0; dirty=true; }
+
+function setup(){
+  D=devicePixelRatio||1;
+  W=innerWidth; H=innerHeight;
+  cv.width=W*D; cv.height=H*D;
+  cv.style.width=W+"px"; cv.style.height=H+"px";
+  SCOLS=Math.floor(W/CW);          // columnas de UNA pantalla
+  COLS=SCOLS*MUNDO;                // columnas de TODO el prado
+  ROWS=Math.floor(H/CH);
+  horizon=Math.floor(ROWS*0.70);
+  g.font=CH+"px monospace"; g.textBaseline="top";
+  const gr=ROWS-horizon;
+
+  suelo=g.createLinearGradient(0,horizon*CH,0,ROWS*CH);
+  suelo.addColorStop(0,"#050507"); suelo.addColorStop(1,"#0b1a0d");
+
+  stars=[];
+  for(let i=0;i<COLS*horizon/60;i++)
+    stars.push({x:rnd(COLS),y:rnd(horizon),p:R(0,6.28),s:R(.5,2)});
+
+  blades=[];
+  const n=COLS*gr/6;
+  for(let i=0;i<n;i++){
+    const by=horizon+1+rnd(gr);
+    const depth=(by-horizon)/gr;
+    const fl=Math.random()<.06;
+    const hue=R(85,125), s=R(35,55), l=9+depth*20+R(0,7);
+    const red=Math.random()<.7;
+    blades.push({
+      x:R(0,COLS), by,
+      len:Math.round(2+depth*5+R(0,3))+(fl?3:0),
+      lean:R(-1.2,1.2)*(.5+depth),
+      amp:1.5+depth*2.5,
+      c1:`hsl(${hue},${s}%,${l}%)`,
+      c2:`hsl(${hue},${s}%,${l+12}%)`,
+      ch:["|","|","!","l"][rnd(4)],
+      fl, hch:red?"@":"o",
+      hc:red?["#a4111c","#c81d2a","#e0303c"][rnd(3)]:"#ececec"
+    });
+  }
+  blades.sort((a,b)=>a.by-b.by);
+  reset();
+}
+
+function draw(t){
+  const WW=COLS*CW;
+  g.fillStyle="#050507"; g.fillRect(0,0,WW,H);
+  g.fillStyle=suelo; g.fillRect(0,horizon*CH,WW,H);
+
+  for(const s of stars){
+    if(s.x*CW<VX0 || s.x*CW>VX1) continue;      // fuera de cámara: no se dibuja
+    const a=.2+.6*Math.abs(Math.sin(t*s.s+s.p));
+    g.fillStyle=`rgba(210,215,255,${a})`;
+    g.fillText(s.s>1.7?"*":".", s.x*CW, s.y*CH);
+  }
+
+  for(const b of blades){
+    if(b.x*CW<VX0 || b.x*CW>VX1) continue;
+    g.fillStyle=b.c1;
+    let prev=0;
+    for(let k=0;k<b.len;k++){
+      const f=k/b.len;
+      const off=Math.sin(b.x*.09+t*1.4+b.by*.02)*b.amp*f*f + b.lean*f;
+      const dx=off-prev; prev=off;
+      const x=(b.x+off)*CW, y=(b.by-k)*CH;
+      if(k===b.len-1 && b.fl){
+        g.fillStyle=b.hc; g.fillText(b.hch,x,y);
+      } else {
+        if(k===b.len-2) g.fillStyle=b.c2;
+        const c = dx>.22?"/" : dx<-.22?"\\" : b.ch;
+        g.fillText(c,x,y);
+      }
+    }
+  }
+}
+
+function clampCam(){
+  zoom=Math.min(ZMAX,Math.max(ZMIN,zoom));
+  camX=Math.min(Math.max(camX,0), COLS*CW-W/zoom);
+  camY=Math.min(Math.max(camY,0), H-H/zoom);
+}
+
+function render(t){
+  g.setTransform(D,0,0,D,0,0);
+  g.fillStyle="#050507"; g.fillRect(0,0,W,H);
+  // la cámara: mueve y escala todo el mundo
+  g.setTransform(D*zoom,0,0,D*zoom,-camX*zoom*D,-camY*zoom*D);
+  VX0=camX-40; VX1=camX+W/zoom+40;           // zona visible
+  draw(t);
+  g.setTransform(D,0,0,D,0,0);
+}
+
+let t0=performance.now(), last=0;
+function tick(now){
+  if(dirty || now-last>=1000/FPS-2){
+    last=now; dirty=false; render((now-t0)/1000);
+  }
+  requestAnimationFrame(tick);
+}
+
+// ---- Controles: 1 dedo = mover, 2 dedos = zoom ----
+const ptr=new Map();
+let lastMx=0, lastMy=0, lastD=0;
+function medir(){
+  const p=[...ptr.values()];
+  const mx=p.reduce((a,q)=>a+q.x,0)/p.length;
+  const my=p.reduce((a,q)=>a+q.y,0)/p.length;
+  const d=p.length>1?Math.hypot(p[0].x-p[1].x,p[0].y-p[1].y):0;
+  return {mx,my,d};
+}
+cv.addEventListener("pointerdown",e=>{
+  cv.setPointerCapture(e.pointerId);
+  ptr.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  const m=medir(); lastMx=m.mx; lastMy=m.my; lastD=m.d;
+});
+cv.addEventListener("pointermove",e=>{
+  if(!ptr.has(e.pointerId)) return;
+  ptr.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  const m=medir();
+  if(ptr.size>1 && lastD>0){
+    const z=Math.min(ZMAX,Math.max(ZMIN,zoom*m.d/lastD));
+    const wx=camX+lastMx/zoom, wy=camY+lastMy/zoom;
+    zoom=z; camX=wx-m.mx/z; camY=wy-m.my/z;
+  } else {
+    camX-=(m.mx-lastMx)/zoom; camY-=(m.my-lastMy)/zoom;
+  }
+  lastMx=m.mx; lastMy=m.my; lastD=m.d;
+  clampCam(); dirty=true;
+});
+function soltar(e){
+  ptr.delete(e.pointerId);
+  if(ptr.size){ const m=medir(); lastMx=m.mx; lastMy=m.my; lastD=m.d; }
+}
+cv.addEventListener("pointerup",soltar);
+cv.addEventListener("pointercancel",soltar);
+cv.addEventListener("dblclick",reset);
+cv.addEventListener("wheel",e=>{
+  e.preventDefault();
+  const z=Math.min(ZMAX,Math.max(ZMIN,zoom*Math.exp(-e.deltaY*0.0015)));
+  const wx=camX+e.clientX/zoom, wy=camY+e.clientY/zoom;
+  zoom=z; camX=wx-e.clientX/z; camY=wy-e.clientY/z;
+  clampCam(); dirty=true;
+},{passive:false});
+
+let rt=0; addEventListener("resize",()=>{clearTimeout(rt); rt=setTimeout(setup,200);});
+setup(); requestAnimationFrame(tick);
+</script><script src="pasto_color.js"></script><script src="caballero.js"></script><script src="princesa.js"></script><script src="colorear.js"></script><script src="moon.js"></script><script src="limite.js"></script></body></html>
